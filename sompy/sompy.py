@@ -20,7 +20,7 @@ from multiprocessing.dummy import Pool
 from multiprocessing import cpu_count
 from scipy.sparse import csr_matrix
 from sklearn import neighbors
-from joblib import Parallel, delayed, load, dump
+from sklearn.externals.joblib import Parallel, delayed, load, dump
 import sys
 
 from .decorators import timeit
@@ -50,7 +50,8 @@ class SOMFactory(object):
               neighborhood='gaussian',
               training='batch',
               name='sompy',
-              component_names=None):
+              component_names=None,
+              track_history=False):
         """
         :param data: data to be clustered, represented as a matrix of n rows,
             as inputs and m cols as input features
@@ -90,7 +91,7 @@ class SOMFactory(object):
             normalizer = None
         neighborhood_calculator = NeighborhoodFactory.build(neighborhood)
         return SOM(data, neighborhood_calculator, normalizer, mapsize, mask,
-                   mapshape, lattice, initialization, training, name, component_names)
+                   mapshape, lattice, initialization, training, name, component_names, track_history)
 
 
 class SOM(object):
@@ -106,7 +107,8 @@ class SOM(object):
                  initialization='pca',
                  training='batch',
                  name='sompy',
-                 component_names=None):
+                 component_names=None,
+                 track_history=False):
         """
         Self Organizing Map
 
@@ -137,10 +139,17 @@ class SOM(object):
         self.initialization = initialization
         self.mask = mask or np.ones([1, self._dim])
         mapsize = self.calculate_map_size(lattice) if not mapsize else mapsize
-        self.codebook = Codebook(mapsize, lattice)
+        self.codebook = Codebook(mapsize, lattice, mapshape)
         self.training = training
         self._component_names = self.build_component_names() if component_names is None else [component_names]
         self._distance_matrix = self.calculate_map_dist()
+
+        self.track_history = track_history
+        self._history = []
+
+    @property
+    def history(self):
+        return self._history
 
     @property
     def component_names(self):
@@ -238,10 +247,10 @@ class SOM(object):
 
         if self.initialization == 'random':
             self.codebook.random_initialization(self._data)
-
         elif self.initialization == 'pca':
             self.codebook.pca_linear_initialization(self._data)
-
+        elif self.initialization == 'spherical':
+            self.codebook.spherical_initialization(self._data)
         self.rough_train(njob=n_job, shared_memory=shared_memory, trainlen=train_rough_len,
                          radiusin=train_rough_radiusin, radiusfin=train_rough_radiusfin,trainlen_factor=train_len_factor,maxtrainlen=maxtrainlen)
         self.finetune_train(njob=n_job, shared_memory=shared_memory, trainlen=train_finetune_len,
@@ -272,7 +281,7 @@ class SOM(object):
         #lbugnon: add trainlen_factor
         trainlen=int(trainlen*trainlen_factor)
         
-        if self.initialization == 'random':
+        if self.initialization in ['random', 'spherical']:
             radiusin = max(1, np.ceil(ms/3.)) if not radiusin else radiusin
             radiusfin = max(1, radiusin/6.) if not radiusfin else radiusfin
 
@@ -288,7 +297,7 @@ class SOM(object):
         ms, mpd = self._calculate_ms_and_mpd()
 
         #lbugnon: add maxtrainlen
-        if self.initialization == 'random':
+        if self.initialization in ['random', 'spherical']:
             trainlen = min(int(np.ceil(50*mpd)),maxtrainlen) if not trainlen else trainlen
             radiusin = max(1, ms/12.)  if not radiusin else radiusin # from radius fin in rough training
             radiusfin = max(1, radiusin/25.) if not radiusfin else radiusfin
@@ -336,6 +345,7 @@ class SOM(object):
             neighborhood = self.neighborhood.calculate(
                 self._distance_matrix, radius[i], self.codebook.nnodes)
             bmu = self.find_bmu(data, njb=njob)
+            self.update_history(bmu[0])
             self.codebook.matrix = self.update_codebook_voronoi(data, bmu,
                                                                 neighborhood)
 
@@ -353,6 +363,7 @@ class SOM(object):
                 
                 #sys.exit("quantization error=nan, exit train")
             
+        self.update_history(bmu[0])
         bmu[1] = np.sqrt(bmu[1] + fixed_euclidean_x2)
         self._bmu = bmu
 
@@ -672,6 +683,9 @@ class SOM(object):
 
         return [int(size1), int(size2)]
 
+    def update_history(self, bmu):
+        if self.track_history:
+            self._history.append((self.codebook.matrix, bmu))
 
 # Since joblib.delayed uses Pickle, this method needs to be a top level
 # method in order to be pickled

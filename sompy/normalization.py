@@ -49,6 +49,23 @@ class VarianceNormalizer(Normalizer):
         return n_vect * st + me
 
 
+class NullNormalizer(Normalizer):
+
+    name = 'None'
+
+    def _mean_and_standard_dev(self, data):
+        return np.mean(data, axis=0), np.std(data, axis=0)
+
+    def normalize(self, data):
+        return data
+
+    def normalize_by(self, raw_data, data):
+        return data
+
+    def denormalize_by(self, data_by, n_vect):
+        return n_vect
+
+
 class RangeNormalizer(Normalizer):
 
     name = 'range'
@@ -72,22 +89,3 @@ class HistDNormalizer(Normalizer):
 class HistCNormalizer(Normalizer):
 
     name = 'histc'
-
-''' Added for people who would like to perform clustering without normalization. It allows someone to normalize
-before applying SOM and to increase some weights to some variables. When applying No normalization, when performing
-som.cluster() it would present an error like: No denormalize defined in som'''
-class NoNormalizer(Normalizer):
-
-    name = 'None'
-
-    def normalize(self, data):
-       data=data
-       return data
-
-    def normalize_by(self, raw_data, data):
-       data=data
-       return data
-
-    def denormalize_by(self, data_by, n_vect):
-       n_vect = n_vect
-       return n_vect

@@ -1,5 +1,6 @@
 import numpy as np
 import scipy as sp
+from collections.abc import Iterable
 
 from sklearn.decomposition import PCA
 #from sklearn.decomposition import RandomizedPCA# (randomizedpca is deprecated)
@@ -12,6 +13,11 @@ class InvalidNodeIndexError(Exception):
 
 class InvalidMapsizeError(Exception):
     pass
+
+
+class InvalidMapShapeError(Exception):
+    pass
+
 
 def generate_hex_lattice(n_rows, n_columns):
     x_coord = []
@@ -26,22 +32,25 @@ def generate_hex_lattice(n_rows, n_columns):
 
 class Codebook(object):
 
-    def __init__(self, mapsize, lattice='rect'):
+    def __init__(self, mapsize, lattice='rect', mapshape='planar'):
         self.lattice = lattice
+        self.mapshape = mapshape
 
-        if 2 == len(mapsize):
-            _size = [1, np.max(mapsize)] if 1 == np.min(mapsize) else mapsize
-
-        elif 1 == len(mapsize):
-            _size = [1, mapsize[0]]
-            print('input was considered as the numbers of nodes')
-            print('map size is [{dlen},{dlen}]'.format(dlen=int(mapsize[0]/2)))
+        if isinstance(mapsize, Iterable):
+            if 2 == len(mapsize):
+                _size = [1, np.max(mapsize)] if 1 == np.min(mapsize) else mapsize
+            elif 1 == len(mapsize):
+                _size = [1, mapsize[0]]
+        elif isinstance(mapsize, int):
+            _size = [1, mapsize]
         else:
             raise InvalidMapsizeError(
                 "Mapsize is expected to be a 2 element list or a single int")
-
+        if isinstance(mapsize, int) or (isinstance(mapsize, Iterable) and 1 == len(mapsize)):
+            print('input was considered as the numbers of nodes')
+            print(f'map size is [{_size[0]},{_size[1]}]')
         self.mapsize = _size
-        self.nnodes = self.mapsize[0]*self.mapsize[1]
+        self.nnodes = _size[0]*_size[1]
         self.matrix = np.asarray(self.mapsize)
         self.initialized = False
 
@@ -60,6 +69,29 @@ class Codebook(object):
         mn = np.tile(np.min(data, axis=0), (self.nnodes, 1))
         mx = np.tile(np.max(data, axis=0), (self.nnodes, 1))
         self.matrix = mn + (mx-mn)*(np.random.rand(self.nnodes, data.shape[1]))
+        self.initialized = True
+
+    @timeit()
+    def spherical_initialization(self, data):
+        """
+        see https://en.wikipedia.org/wiki/N-sphere
+        :param data: data to use for the initialization
+        :returns: initialized matrix with same dimension as input data
+        """
+        mn = np.min(data, axis=0)
+        mx = np.max(data, axis=0)
+        r = (mx - mn) / 2
+        center = (mx + mn) / 2
+        phi = np.linspace(0, np.pi, self.nnodes, endpoint=False)
+
+        x = []
+        sinuses = np.ones(self.nnodes)
+        for _ in range(data.shape[1] - 2):
+            x.append(np.cos(phi) * sinuses)
+            sinuses = np.sin(phi) * sinuses
+        x.append(np.cos(2 * phi) * sinuses)
+        x.append(np.sin(2 * phi) * sinuses)
+        self.matrix = center + r * np.array(x).T
         self.initialized = True
 
     @timeit()
@@ -177,10 +209,13 @@ class Codebook(object):
                 "Node index '%s' is invalid" % node_ind)
 
         if rows > 0 and cols > 0:
-            r = np.arange(0, rows, 1)[:, np.newaxis]
-            c = np.arange(0, cols, 1)
-            dist2 = (r-node_row)**2 + (c-node_col)**2
-
+            if self.mapshape == 'planar':
+                dist2 = self._planar_mapshape_dist(rows, cols, node_row, node_col)
+            elif self.mapshape == 'cylinder':
+                dist2 = self._cylinder_mapshape_dist(rows, cols, node_row, node_col)
+            else:
+                raise InvalidMapShapeError(
+                    "Mapshape '%s' is invalid" % self.mapshape)
             dist = dist2.ravel()
         else:
             raise InvalidMapsizeError(
@@ -188,3 +223,17 @@ class Codebook(object):
                 "Cols '%s', Rows '%s'".format(cols=cols, rows=rows))
 
         return dist
+
+    def _planar_mapshape_dist(self, rows, cols, node_row, node_col):
+        r = np.arange(0, rows, 1)[:, np.newaxis]
+        c = np.arange(0, cols, 1)
+        d = (r - node_row) ** 2 + (c - node_col) ** 2
+        return d
+
+    def _cylinder_mapshape_dist(self, rows, cols, node_row, node_col):
+        r = np.arange(0, rows, 1)[:, np.newaxis]
+        c1 = np.arange(0, cols // 2 + 1, 1)
+        c2 = np.arange((cols - 1) // 2, 0, -1)
+        c = np.concatenate([c1, c2])
+        d = (r - node_row) ** 2 + np.roll(c, node_col) ** 2
+        return d
